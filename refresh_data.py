@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""
+Daily refresh script for Seamless Ads Dashboard.
+Run by GitHub Actions every day at 9AM Eastern.
+"""
+
+import os, csv, io, json, time, re, urllib.request, urllib.parse
+from datetime import datetime, timezone
+
+SHEET_ID = os.environ.get("SHEET_ID", "14C_1qBb2JjN8Rjyam_x45St7QHdQBcDSKL9FjP-MryE")
+
+TABS = [
+    "Campaign Data", "Adset Data", "Ad Data",
+    "NEW Trials Started", "Booked Demos",
+    "Held Demos - On Opp level", "New Closed Won", "Recurring",
+]
+
+def fetch_tab(tab, retries=4):
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={urllib.parse.quote(tab)}"
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                rows = list(csv.reader(io.StringIO(resp.read().decode("utf-8"))))
+                if rows and "DNS" in rows[0][0]: raise ValueError("DNS cache overflow")
+                print(f"  ✓ {tab}: {len(rows)-1} rows")
+                return rows
+        except Exception as exc:
+            print(f"  ✗ {tab} attempt {attempt+1}: {exc}")
+            if attempt < retries - 1: time.sleep(5)
+    raise RuntimeError(f"Failed to fetch: {tab}")
+
+def clean(v):
+    return v.replace("\n", " ").replace("\r", " ").strip() if isinstance(v, str) else v
+
+def main():
+    print("Fetching Google Sheet tabs...")
+    all_data = {}
+    for tab in TABS:
+        rows = fetch_tab(tab)
+        all_data[tab] = [[clean(c) for c in row] for row in rows]
+
+    all_data["Held Demos"] = all_data["Held Demos - On Opp level"]
+    all_data["Trials Started"] = all_data["NEW Trials Started"]
+
+    data_json = json.dumps(all_data, ensure_ascii=True)
+    data_json = data_json.replace("</script>", "<\\/script>")
+
+    html_path = os.path.join(os.path.dirname(__file__), "index.html")
+    with open(html_path, "r", encoding="utf-8") as fh:
+        content = fh.read()
+
+    # Replace SHEET_DATA using brace counting (avoids regex escape issues)
+    marker = "const SHEET_DATA = "
+    start_idx = content.find(marker)
+    if start_idx == -1:
+        raise RuntimeError("SHEET_DATA marker not found in index.html")
+
+    brace_start = content.find("{", start_idx)
+    depth = 0
+    end_idx = brace_start
+    for i in range(brace_start, len(content)):
+        if content[i] == "{": depth += 1
+        elif content[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end_idx = i + 1
+                if end_idx < len(content) and content[end_idx] == ";":
+                    end_idx += 1
+                break
+
+    new_content = content[:start_idx] + marker + data_json + ";" + content[end_idx:]
+    print("✓ SHEET_DATA replaced")
+
+    # Build timestamp in Eastern time (handles EST/EDT automatically)
+    from datetime import timedelta
+    # ET = UTC-5 (EST) or UTC-4 (EDT)
+    # Python's %Z doesn't handle this well, so calculate manually
+    # Use a simple EDT/EST check: EDT is March 2nd Sunday to Nov 1st Sunday
+    now = datetime.now(timezone.utc)
+    # Approximate EDT: second Sunday in March to first Sunday in November
+    year = now.year
+    # Second Sunday in March
+    march1 = datetime(year, 3, 1)
+    edt_start = march1 + timedelta(days=(6 - march1.weekday() + 7) % 7 + 7)
+    # First Sunday in November  
+    nov1 = datetime(year, 11, 1)
+    est_start = nov1 + timedelta(days=(6 - nov1.weekday()) % 7)
+    edt_start = edt_start.replace(tzinfo=timezone.utc)
+    est_start = est_start.replace(tzinfo=timezone.utc)
+    if edt_start <= now < est_start:
+        et_offset = -4  # EDT
+        tz_label = "EDT"
+    else:
+        et_offset = -5  # EST
+        tz_label = "EST"
+    et_now = now + timedelta(hours=et_offset)
+    ts = et_now.strftime("%-m/%-d/%Y, %-I:%M %p") + " " + tz_label
+
+    # Timestamp display removed
+
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(new_content)
+
+    print(f"✓ index.html updated ({len(new_content):,} bytes)")
+    print("Done.")
+
+if __name__ == "__main__":
+    main()
