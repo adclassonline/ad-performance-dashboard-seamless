@@ -2,8 +2,8 @@ name: Daily Dashboard Refresh
 
 on:
   schedule:
-    - cron: '0 13 * * *'   # 9AM EDT (UTC-4), Apr-Nov
-    - cron: '0 14 * * *'   # 9AM EST (UTC-5), Nov-Apr
+    - cron: '0 10 * * *'   # 6AM EDT (UTC-4), Apr-Nov
+    - cron: '0 11 * * *'   # 6AM EST (UTC-5), Nov-Apr
   workflow_dispatch:        # Allow manual trigger from GitHub UI
 
 jobs:
